@@ -5,3 +5,4 @@ dist/
 packages/*/.env
 *.log
 .DS_Store
+NOTES-*.md
