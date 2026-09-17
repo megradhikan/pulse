@@ -4,9 +4,12 @@ import type { Room } from "../rooms.js";
 import type { UpdateOrigin } from "../server.js";
 
 const SYSTEM_PROMPT =
-  "Continue the following text naturally, in the same voice and tense. Output only the continuation, no preamble.";
+  "Continue the following text naturally, in the same voice and tense, picking up exactly where it stops " +
+  "(including a leading space if the text doesn't already end in whitespace, so it reads correctly when " +
+  "concatenated directly onto the given text with no separator). Output only the continuation itself — no " +
+  "preamble, no quotation marks, no restating what came before.";
 
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = "openai/gpt-oss-120b";
 
 export interface StreamSuggestionArgs {
   groq: Groq;
