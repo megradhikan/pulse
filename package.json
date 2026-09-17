@@ -1,0 +1,12 @@
+{
+  "name": "pulse",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "build": "pnpm --filter backend build && pnpm --filter frontend build",
+    "test:concurrent": "pnpm --filter backend test:concurrent",
+    "test:load": "pnpm --filter backend test:load"
+  }
+}
