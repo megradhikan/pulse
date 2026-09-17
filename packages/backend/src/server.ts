@@ -31,7 +31,7 @@ export interface UpdateOrigin {
 }
 
 const PORT = Number(process.env.PORT ?? 3001);
-const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+const REDIS_URL = process.env.REDIS_URL;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 function log(msg: string): void {
@@ -56,7 +56,11 @@ app.post("/api/rooms", (_req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-const redisPubSub = new RedisPubSub(REDIS_URL, handleRedisMessage, log);
+// Redis pub/sub only matters once you run more than one backend instance —
+// a single process broadcasts to its own connections from memory just fine.
+// Wiring it up is opt-in via REDIS_URL so a solo deployment doesn't need a
+// Redis add-on at all.
+const redisPubSub = REDIS_URL ? new RedisPubSub(REDIS_URL, handleRedisMessage, log) : null;
 
 // Set of roomIds that already have a doc.on('update') broadcast handler
 // registered, so we don't double-register across reconnects/rejoins.
@@ -85,7 +89,7 @@ function wireRoomBroadcast(room: Room): void {
     );
 
     if (!tag?.fromRedis) {
-      redisPubSub.publish(room.roomId, message).catch((err) => log(`[redis:publish:error] ${err.message}`));
+      redisPubSub?.publish(room.roomId, message).catch((err) => log(`[redis:publish:error] ${err.message}`));
     }
   });
 }
@@ -149,7 +153,7 @@ wss.on("connection", (ws: WebSocket) => {
       case "join": {
         const room = getOrCreateRoom(msg.roomId);
         wireRoomBroadcast(room);
-        redisPubSub.ensureSubscribed(msg.roomId).catch((err) => log(`[redis:sub:error] ${err.message}`));
+        redisPubSub?.ensureSubscribed(msg.roomId).catch((err) => log(`[redis:sub:error] ${err.message}`));
 
         joinedRoomId = msg.roomId;
         joinedUserId = msg.userId;
@@ -182,7 +186,7 @@ wss.on("connection", (ws: WebSocket) => {
           displayName: msg.displayName,
         };
         broadcastLocal(room, joinedMessage, connId);
-        redisPubSub.publish(msg.roomId, joinedMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
+        redisPubSub?.publish(msg.roomId, joinedMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
 
         log(`[join] room=${msg.roomId} user=${msg.userId} name=${msg.displayName} connId=${connId}`);
         break;
@@ -229,7 +233,7 @@ wss.on("connection", (ws: WebSocket) => {
           color,
         };
         broadcastLocal(room, cursorMessage, connId);
-        redisPubSub.publish(msg.roomId, cursorMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
+        redisPubSub?.publish(msg.roomId, cursorMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
         break;
       }
 
@@ -307,7 +311,7 @@ function handleDisconnect(roomId: string, userId: string, connId: string): void 
 
   const leftMessage: ServerMessage = { type: "user-left", roomId, userId };
   broadcastLocal(room, leftMessage);
-  redisPubSub.publish(roomId, leftMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
+  redisPubSub?.publish(roomId, leftMessage).catch((err) => log(`[redis:publish:error] ${err.message}`));
 
   log(`[leave] room=${roomId} user=${userId} connId=${connId} remaining=${room.connections.size}`);
 
@@ -318,5 +322,5 @@ function handleDisconnect(roomId: string, userId: string, connId: string): void 
 }
 
 server.listen(PORT, () => {
-  log(`[listening] port=${PORT} redis=${REDIS_URL} aiEnabled=${Boolean(groq)}`);
+  log(`[listening] port=${PORT} redis=${REDIS_URL ?? "disabled (single instance)"} aiEnabled=${Boolean(groq)}`);
 });

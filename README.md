@@ -11,6 +11,10 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
+<p align="center"><a href="https://frontend-one-red-89.vercel.app"><strong>Live demo →</strong></a></p>
+
+> The backend runs on Render's free tier, which sleeps after ~15 minutes idle — if the demo link is slow to load the first time, that's a cold start, give it 30–50s and it'll be snappy after.
+
 Open a room, share the link, and watch someone else's cursor move through the same document as yours. Type at the same time as they do and nothing gets clobbered. Hit **Continue writing** and an LLM completion streams in token by token — visible to everyone in the room, merging correctly even if someone else is typing at that exact moment.
 
 Multiplayer text editing is a genuinely hard concurrency problem, and adding an LLM into the mix that's also mutating shared state in real time makes it harder. Pulse exists to work through that problem properly rather than glue together an off-the-shelf sync library: the CRDT document model is Yjs, but the WebSocket protocol, room/connection lifecycle, and cross-instance fan-out are hand-rolled.
