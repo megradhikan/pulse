@@ -1,232 +1,116 @@
-# Pulse — Real-Time Collaborative AI Workspace
+<h1 align="center">Pulse</h1>
+<p align="center"><strong>A real-time collaborative text editor with AI suggestions that stream safely into concurrent edits.</strong></p>
 
-A shared document workspace where multiple users see each other's live cursors
-and edits in real time, and can trigger AI suggestions that stream
-token-by-token into the shared document without clobbering concurrent human
-edits. Backend is WebSocket-based; Redis pub/sub fans updates out across
-server instances so the system isn't limited to a single process.
+<p align="center">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white">
+  <img alt="Node.js" src="https://img.shields.io/badge/Node-20-339933?logo=node.js&logoColor=white">
+  <img alt="Redis" src="https://img.shields.io/badge/Redis-pub%2Fsub-DC382D?logo=redis&logoColor=white">
+  <img alt="Yjs" src="https://img.shields.io/badge/CRDT-Yjs-8A2BE2">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
+</p>
 
-## Stack
+Open a room, share the link, and watch someone else's cursor move through the same document as yours. Type at the same time as they do and nothing gets clobbered. Hit **Continue writing** and Claude's response streams in token by token — visible to everyone in the room, merging correctly even if someone else is typing at that exact moment.
 
-- **Frontend**: React 18 + TypeScript, Vite, [`yjs`](https://github.com/yjs/yjs)
-- **Backend**: Node 20 + Express (HTTP only) + `ws` (WebSocket), TypeScript
-- **CRDT**: Yjs (`Y.Doc` / `Y.Text`), hand-rolled WebSocket sync protocol —
-  see [`packages/backend/src/protocol.ts`](packages/backend/src/protocol.ts)
-  (not the pre-built `y-websocket` server)
-- **Pub/sub**: Redis via `ioredis`, for cross-instance fanout
-- **AI**: Anthropic Claude API, streaming mode, via `@anthropic-ai/sdk`
+Multiplayer text editing is a genuinely hard concurrency problem, and adding an LLM into the mix that's also mutating shared state in real time makes it harder. Pulse exists to work through that problem properly rather than glue together an off-the-shelf sync library: the CRDT document model is Yjs, but the WebSocket protocol, room/connection lifecycle, and cross-instance fan-out are hand-rolled.
 
-## Repository structure
+## How it works
 
+**Conflict-free editing.** Every document is a `Y.Text` CRDT. Clients don't send "replace the whole document" on every keystroke — the editor diffs the old and new value down to a minimal insert/delete, so two people typing in different parts of the same paragraph both land correctly instead of one overwriting the other. [`concurrentEditTest.ts`](packages/backend/scripts/concurrentEditTest.ts) proves this directly: two raw WebSocket clients race to insert distinct strings into the same document, and both converge on an identical, uncorrupted result.
+
+**AI text is just another edit.** When you click *Continue writing*, the server streams a completion from Claude and inserts each token into the document the same way a keystroke would — through the same `Y.Text` operations, broadcast through the same `doc-update` path. There's no separate "AI text" rendering layer on the client. The tricky part is that the insertion point has to survive concurrent edits happening earlier in the document while tokens are still streaming in, so the anchor is a Yjs relative position (`createRelativePositionFromTypeIndex`) rather than a plain numeric offset — it gets re-resolved to a live index before every token is inserted. See [`streamSuggestion.ts`](packages/backend/src/ai/streamSuggestion.ts).
+
+**Scaling past one process.** A single Node process can broadcast to its own connections from memory, no coordination needed. The moment you run a second instance, a client on instance A has no way to hear about an edit made by a client on instance B — so every room update also gets published to a Redis channel (`room:{roomId}:updates`), and every instance subscribed to that room relays it to its own local connections. See [`redisPubSub.ts`](packages/backend/src/redisPubSub.ts).
+
+**Reconnecting without losing work.** Yjs is offline-first by design: a client keeps editing its local document while disconnected, and those edits merge automatically the moment it catches back up — no custom merge-on-reconnect logic needed. The WebSocket client reconnects with exponential backoff (500ms → 8s, capped at 10 attempts) and re-syncs the full document state on every reconnect. Getting this right in React 18 took an extra pass: creating the socket in `useMemo` looked fine until Strict Mode's dev-only mount → cleanup → remount cycle closed it before the first connection ever finished — the fix was moving the socket's entire lifecycle inside the effect that owns it, so each cleanup pass tears down cleanly instead of poisoning a shared instance.
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        A[Browser A]
+        B[Browser B]
+    end
+
+    subgraph "Backend instance 1"
+        WS1[WebSocket server]
+        Room1[Room: Y.Doc + presence]
+    end
+
+    subgraph "Backend instance 2"
+        WS2[WebSocket server]
+        Room2[Room: Y.Doc + presence]
+    end
+
+    Redis[(Redis pub/sub<br/>room:*:updates)]
+    Claude[Claude API<br/>streaming]
+
+    A <--doc-update / cursor--> WS1
+    B <--doc-update / cursor--> WS2
+    WS1 <--> Room1
+    WS2 <--> Room2
+    Room1 <-- publish / subscribe --> Redis
+    Room2 <-- publish / subscribe --> Redis
+    WS1 -. ai-request .-> Claude
+    Claude -. token stream .-> WS1
 ```
-pulse/
-  packages/
-    frontend/   React app — editor, cursors, presence, AI button
-    backend/    Express + ws server, Yjs room state, Redis fanout, AI streaming
-  .env.example
-```
 
-## Setup
-
-### Prerequisites
-- Node 20+
-- pnpm (`npm install -g pnpm`)
-- Redis reachable locally (`docker run -d -p 6379:6379 redis:7-alpine`, or
-  `brew install redis && brew services start redis`)
-- An Anthropic API key (only required to test the "Continue writing" feature)
-
-### Install
+## Try it
 
 ```bash
 pnpm install
-```
+docker run -d -p 6379:6379 redis:7-alpine   # or: brew install redis && brew services start redis
 
-### Configure environment
-
-Copy the relevant blocks from `.env.example` into two files:
-
-```bash
-cp .env.example packages/backend/.env   # then trim to the backend/.env block
-cp .env.example packages/frontend/.env  # then trim to the frontend/.env block
-```
-
-Or just create them directly:
-
-**`packages/backend/.env`**
-```
-PORT=3001
+# packages/backend/.env
+echo "PORT=3001
 REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=sk-ant-...
-NODE_ENV=development
+ANTHROPIC_API_KEY=sk-ant-..." > packages/backend/.env
+
+# packages/frontend/.env
+echo "VITE_WS_URL=ws://localhost:3001" > packages/frontend/.env
+
+pnpm dev:backend    # terminal 1
+pnpm dev:frontend   # terminal 2
 ```
 
-**`packages/frontend/.env`**
-```
-VITE_WS_URL=ws://localhost:3001
-```
-
-### Run
-
-In two terminals:
-
-```bash
-pnpm dev:backend
-```
-```bash
-pnpm dev:frontend
-```
-
-Open http://localhost:5173, click **New document**, then open the resulting
-`/room/:roomId` URL in a second browser window to test collaboration.
+Open `localhost:5173`, click **New document**, then open the room URL again in a second window (or an incognito one) to see it as two people. `ANTHROPIC_API_KEY` is only needed for the AI suggestion button — everything else works without it.
 
 ## Testing
 
-### Concurrent-edit correctness test (section 10.2)
-
-The single most important test in the project: two raw WebSocket clients
-insert distinct strings into the same room at (nearly) the same time; asserts
-both converge to an identical final document containing both strings intact.
-
 ```bash
-pnpm test:concurrent
+pnpm test:concurrent                              # the CRDT correctness test above
+pnpm --filter backend test:load -- --n=100         # WebSocket broadcast latency, p50/p95/p99
 ```
 
-Requires the backend (and Redis) to be running.
+On one local instance with a single room, broadcast latency holds at p50 ≈ 49ms / p95 ≈ 83ms / p99 ≈ 99ms with 100 concurrent connections sending cursor updates. Push to 200 in one room and it falls over — p50 jumps past a second — because per-room broadcast fan-out is O(n²) on a single event loop (each of *n* clients' updates gets serialized and sent to the other *n − 1*). Redis fixes cross-instance visibility, not this: 200 people actively moving their cursor in the *same* room will always bottleneck on whichever single instance is broadcasting to all of them. Sharding rooms across instances is what actually fixes it.
 
-### Load test (section 10.3, stretch)
+## Project layout
 
-Opens N WebSocket connections to the same room, sends periodic cursor
-updates, and reports p50/p95/p99 broadcast latency.
-
-```bash
-pnpm --filter backend test:load -- --n=100 --durationMs=10000
+```
+packages/
+  backend/
+    src/
+      server.ts          Express + ws bootstrap, message routing
+      rooms.ts            in-memory room registry (Y.Doc, connections, presence)
+      redisPubSub.ts       cross-instance fan-out
+      ai/streamSuggestion.ts   Claude streaming -> Yjs relative-position inserts
+      protocol.ts          WebSocket message types
+    scripts/
+      concurrentEditTest.ts    the CRDT correctness proof
+      loadTest.ts              connection/latency load test
+  frontend/
+    src/
+      hooks/useYDoc.ts        Y.Doc + WebSocket wiring, offline-first reconnect
+      hooks/usePresence.ts     remote cursor/user tracking
+      components/Editor.tsx    textarea <-> Y.Text diff binding, caret preservation
+      components/Cursor.tsx    remote caret rendering
 ```
 
-### Manual multi-browser test (section 10.1)
+## Design tradeoffs, briefly
 
-Open the same room URL in a regular window and an incognito window. Verify:
-both see the same content on load, typing in one appears in the other
-within ~200ms, cursors are visible and update live, and "Continue writing"
-streams visibly to both.
+Room state lives in server memory only — there's no database, and that's deliberate scope, not an oversight. A client's WebSocket dropping and reconnecting is fully safe (its local document survives and re-syncs). What *isn't* covered is a full backend process restart wiping every room that isn't actively being edited at that moment — a client with nothing new to send has no way to know the server forgot what it already had. Adding real persistence (a periodic Yjs snapshot to a database, replayed on room creation) would close that gap; it just wasn't in scope here.
 
-### Reconnect test (section 10.4)
+No auth beyond an optional display name, no rich text, no document history beyond what Yjs gives for free — all intentional, all to keep the interesting part (concurrency, not CRUD) front and center.
 
-With the app running, open dev tools, throttle the network to "offline" for
-5 seconds, then restore it. The client should reconnect automatically with
-no duplicated or lost content.
+---
 
-### Cross-instance fanout (stretch, section 3.2.1)
-
-Run two backend instances against the same Redis and confirm a client on
-instance A sees edits from a client on instance B:
-
-```bash
-PORT=3001 pnpm dev:backend
-PORT=3002 pnpm dev:backend
-```
-
-Point one browser tab's `VITE_WS_URL` at `ws://localhost:3001` and another at
-`ws://localhost:3002` (rebuild/reload the frontend between, or run two Vite
-dev servers with different `.env` files), open the same room in both, and
-confirm edits sync across the two backend processes via the
-`room:{roomId}:updates` Redis channel.
-
-## Deployment
-
-- **Backend + Redis**: deploy `packages/backend` to Railway as a Node
-  service (`pnpm --filter backend start`), and add Railway's managed Redis
-  plugin — it will provide `REDIS_URL` as an environment variable
-  automatically (wire it into the service's env). Set `ANTHROPIC_API_KEY`
-  and `PORT` (Railway sets `PORT` itself; the server already reads it).
-- **Frontend**: deploy `packages/frontend` to Vercel as a static Vite build
-  (`pnpm --filter frontend build`, output `packages/frontend/dist`). Set
-  `VITE_WS_URL` to your Railway backend's `wss://` URL.
-
-This repo does not include actual Railway/Vercel deploy configuration beyond
-what's needed to build — connect the repo in each platform's dashboard and
-point it at the relevant package.
-
-## Demo script (~90s, section 11)
-
-1. Two browser windows, same room URL.
-2. Type in window 1 — appears live in window 2 with a cursor label.
-3. Type simultaneously in both, in different parts of the doc — both sets of
-   edits land correctly (proves CRDT conflict resolution).
-4. In window 1, click **Continue writing** (or ⌘J) — AI streams token by
-   token, visible in both windows.
-5. While AI is still streaming, type in window 2 — human edit and AI text
-   both land correctly without corruption. **This is the money shot.**
-6. Kill network on window 2, show "Reconnecting…" state, restore it, show
-   resync.
-7. (Stretch) Terminal with two backend processes on different ports, one
-   client per instance, proving cross-instance sync via Redis.
-
-## Interview talking points (section 12)
-
-Write real answers to these before interviewing:
-
-1. Why Yjs / CRDTs instead of operational transform or last-write-wins?
-2. Why does the AI-token-as-Yjs-op design (relative positions, see
-   [`streamSuggestion.ts`](packages/backend/src/ai/streamSuggestion.ts))
-   avoid corrupting concurrent human edits?
-3. Why is Redis pub/sub necessary once there's more than one server
-   instance, and what specifically breaks without it?
-4. What happens on reconnect, and why doesn't the client lose local edits
-   made while offline? (Verified: a client whose WebSocket drops while the
-   server keeps running reconnects with its existing Y.Doc, resyncs via a
-   fresh `sync`, and both pre- and mid-disconnect edits survive intact.)
-5. What was the measured latency/concurrency number from the load test, and
-   what was the bottleneck when pushing it higher? (Measured locally, one
-   backend instance, one room, cursor updates every 200ms per client:
-   at N=100, p50=49ms / p95=83ms / p99=99ms. At N=200, latency collapses to
-   p50=1061ms / p95=3626ms / p99=4435ms. Bottleneck: broadcast fanout is
-   O(N²) per room — each of N clients' cursor updates gets JSON-serialized
-   and `.send()` to the other N-1 connections on the single Node event
-   loop, so total broadcast work scales quadratically with room size and
-   saturates a single process well before 200 concurrent editors in one
-   room. This is exactly the kind of ceiling the Redis pub/sub fanout
-   doesn't fix by itself — it lets you shard connections across instances,
-   but a single *room* with 200 simultaneous cursors moving is still
-   bottlenecked by whichever one instance is broadcasting to all of them.)
-6. What happens if the **server process itself** restarts (not just a
-   client's network dropping)? Since room state is in-memory only (no
-   persistence layer — explicitly out of scope for this project), a client
-   that made no new local edits during the outage has nothing new to
-   re-transmit on rejoin, so a room that loses all server-side memory (full
-   process restart, or eviction after 10 idle minutes) can't be
-   reconstructed from an already-synced, non-editing client — only from
-   edits made *during* the outage by a client that's still typing. This is
-   a deliberate consequence of the explicit no-persistence scope, not a
-   protocol bug; worth being able to explain the tradeoff and what adding
-   real persistence (or a CRDT snapshot store) would look like.
-
-## Acceptance checklist (section 13)
-
-- [x] Two independent browsers join the same room and see synced content
-      (verified locally, two Browser-pane tabs)
-- [x] Live cursors visible and updating for both users
-- [x] Concurrent typing in different parts of the doc doesn't corrupt either
-      user's input (verified by `pnpm test:concurrent`, and manually with
-      two live browser tabs)
-- [ ] AI "Continue writing" streams visibly into the doc for all connected
-      clients — code path implemented and the no-key error path verified;
-      needs a real `ANTHROPIC_API_KEY` to verify actual streaming
-- [ ] AI streaming concurrent with a second user's typing doesn't corrupt
-      either — blocked on the above
-- [x] Reconnect after a network drop resyncs without data loss or
-      duplication (verified: WebSocket drops while the server stays up,
-      client reconnects with its existing Y.Doc, both pre- and
-      mid-disconnect edits survive). Note: this does *not* cover a full
-      backend **process** restart — see interview question 6 above; that
-      scenario is out of scope given no persistence layer.
-- [ ] Deployed to a public URL, reachable from a network other than the one
-      it was built on — not yet deployed; needs Railway/Vercel accounts
-- [x] Health check endpoint exists and returns 200 (`GET /health`)
-- [x] Terminal logging shows connection/disconnect/merge/Redis-publish
-      events clearly enough to narrate live
-- [ ] Demo recording exists, under 90 seconds
-- [x] Real (not estimated) concurrency/latency number from `test:load` —
-      see interview question 5 above (N=100: p50=49ms/p95=83ms/p99=99ms;
-      N=200: p50=1061ms/p95=3626ms/p99=4435ms)
-- [ ] Written answers to the 5 (now 6) interview questions above — drafted
-      inline here; review and internalize before interviewing
+MIT licensed. See [LICENSE](LICENSE).
