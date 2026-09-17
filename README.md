@@ -172,27 +172,61 @@ Write real answers to these before interviewing:
 3. Why is Redis pub/sub necessary once there's more than one server
    instance, and what specifically breaks without it?
 4. What happens on reconnect, and why doesn't the client lose local edits
-   made while offline?
+   made while offline? (Verified: a client whose WebSocket drops while the
+   server keeps running reconnects with its existing Y.Doc, resyncs via a
+   fresh `sync`, and both pre- and mid-disconnect edits survive intact.)
 5. What was the measured latency/concurrency number from the load test, and
-   what was the bottleneck when pushing it higher?
+   what was the bottleneck when pushing it higher? (Measured locally, one
+   backend instance, one room, cursor updates every 200ms per client:
+   at N=100, p50=49ms / p95=83ms / p99=99ms. At N=200, latency collapses to
+   p50=1061ms / p95=3626ms / p99=4435ms. Bottleneck: broadcast fanout is
+   O(N²) per room — each of N clients' cursor updates gets JSON-serialized
+   and `.send()` to the other N-1 connections on the single Node event
+   loop, so total broadcast work scales quadratically with room size and
+   saturates a single process well before 200 concurrent editors in one
+   room. This is exactly the kind of ceiling the Redis pub/sub fanout
+   doesn't fix by itself — it lets you shard connections across instances,
+   but a single *room* with 200 simultaneous cursors moving is still
+   bottlenecked by whichever one instance is broadcasting to all of them.)
+6. What happens if the **server process itself** restarts (not just a
+   client's network dropping)? Since room state is in-memory only (no
+   persistence layer — explicitly out of scope for this project), a client
+   that made no new local edits during the outage has nothing new to
+   re-transmit on rejoin, so a room that loses all server-side memory (full
+   process restart, or eviction after 10 idle minutes) can't be
+   reconstructed from an already-synced, non-editing client — only from
+   edits made *during* the outage by a client that's still typing. This is
+   a deliberate consequence of the explicit no-persistence scope, not a
+   protocol bug; worth being able to explain the tradeoff and what adding
+   real persistence (or a CRDT snapshot store) would look like.
 
 ## Acceptance checklist (section 13)
 
-- [ ] Two independent browsers join the same room and see synced content
-- [ ] Live cursors visible and updating for both users
-- [ ] Concurrent typing in different parts of the doc doesn't corrupt either
-      user's input (verified by `pnpm test:concurrent`)
+- [x] Two independent browsers join the same room and see synced content
+      (verified locally, two Browser-pane tabs)
+- [x] Live cursors visible and updating for both users
+- [x] Concurrent typing in different parts of the doc doesn't corrupt either
+      user's input (verified by `pnpm test:concurrent`, and manually with
+      two live browser tabs)
 - [ ] AI "Continue writing" streams visibly into the doc for all connected
-      clients
+      clients — code path implemented and the no-key error path verified;
+      needs a real `ANTHROPIC_API_KEY` to verify actual streaming
 - [ ] AI streaming concurrent with a second user's typing doesn't corrupt
-      either
-- [ ] Reconnect after a network drop resyncs without data loss or
-      duplication
+      either — blocked on the above
+- [x] Reconnect after a network drop resyncs without data loss or
+      duplication (verified: WebSocket drops while the server stays up,
+      client reconnects with its existing Y.Doc, both pre- and
+      mid-disconnect edits survive). Note: this does *not* cover a full
+      backend **process** restart — see interview question 6 above; that
+      scenario is out of scope given no persistence layer.
 - [ ] Deployed to a public URL, reachable from a network other than the one
-      it was built on
-- [ ] Health check endpoint exists and returns 200 (`GET /health`)
-- [ ] Terminal logging shows connection/disconnect/merge/Redis-publish
+      it was built on — not yet deployed; needs Railway/Vercel accounts
+- [x] Health check endpoint exists and returns 200 (`GET /health`)
+- [x] Terminal logging shows connection/disconnect/merge/Redis-publish
       events clearly enough to narrate live
 - [ ] Demo recording exists, under 90 seconds
-- [ ] Real (not estimated) concurrency/latency number from `test:load`
-- [ ] Written answers to the 5 interview questions above
+- [x] Real (not estimated) concurrency/latency number from `test:load` —
+      see interview question 5 above (N=100: p50=49ms/p95=83ms/p99=99ms;
+      N=200: p50=1061ms/p95=3626ms/p99=4435ms)
+- [ ] Written answers to the 5 (now 6) interview questions above — drafted
+      inline here; review and internalize before interviewing
