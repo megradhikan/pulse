@@ -88,6 +88,26 @@ pnpm --filter backend test:load -- --n=100         # WebSocket broadcast latency
 
 On one local instance with a single room, broadcast latency holds at p50 ≈ 49ms / p95 ≈ 83ms / p99 ≈ 99ms with 100 concurrent connections sending cursor updates. Push to 200 in one room and it falls over — p50 jumps past a second — because per-room broadcast fan-out is O(n²) on a single event loop (each of *n* clients' updates gets serialized and sent to the other *n − 1*). Redis fixes cross-instance visibility, not this: 200 people actively moving their cursor in the *same* room will always bottleneck on whichever single instance is broadcasting to all of them. Sharding rooms across instances is what actually fixes it.
 
+**Cross-instance fan-out.** Run two backend processes against the same Redis and prove a client on one sees edits from a client on the other — not via shared memory, since they're separate processes:
+
+```bash
+PORT=3001 pnpm dev:backend    # terminal 1
+PORT=3002 pnpm dev:backend    # terminal 2
+pnpm --filter backend exec tsx scripts/crossInstanceTest.ts
+```
+
+Each instance's logs show it clearly — a locally-received edit logs `fromRedis=false`, the same edit arriving at the other instance a beat later over `room:{roomId}:updates` logs `fromRedis=true`:
+
+```
+# instance on :3001
+[merge] room=test-cross-instance-... source=u-2070b6f1... bytes=46 fromRedis=false
+[merge] room=test-cross-instance-... source=u-939ef279... bytes=42 fromRedis=true
+
+# instance on :3002
+[merge] room=test-cross-instance-... source=u-2070b6f1... bytes=46 fromRedis=true
+[merge] room=test-cross-instance-... source=u-939ef279... bytes=42 fromRedis=false
+```
+
 ## Project layout
 
 ```
@@ -101,6 +121,7 @@ packages/
       protocol.ts          WebSocket message types
     scripts/
       concurrentEditTest.ts    the CRDT correctness proof
+      crossInstanceTest.ts     proves Redis fan-out across two backend processes
       loadTest.ts              connection/latency load test
   frontend/
     src/
