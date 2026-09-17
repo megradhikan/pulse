@@ -2,7 +2,7 @@
   "name": "pulse",
   "private": true,
   "version": "0.1.0",
-  "description": "Real-time collaborative text editor with Yjs CRDT sync, Redis pub/sub fanout, and Claude-streamed AI suggestions.",
+  "description": "Real-time collaborative text editor with Yjs CRDT sync, Redis pub/sub fanout, and Groq-streamed AI suggestions.",
   "license": "MIT",
   "repository": {
     "type": "git",

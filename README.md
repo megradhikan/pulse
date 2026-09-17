@@ -7,10 +7,11 @@
   <img alt="Node.js" src="https://img.shields.io/badge/Node-20-339933?logo=node.js&logoColor=white">
   <img alt="Redis" src="https://img.shields.io/badge/Redis-pub%2Fsub-DC382D?logo=redis&logoColor=white">
   <img alt="Yjs" src="https://img.shields.io/badge/CRDT-Yjs-8A2BE2">
+  <img alt="Groq" src="https://img.shields.io/badge/LLM-Groq-F55036">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
-Open a room, share the link, and watch someone else's cursor move through the same document as yours. Type at the same time as they do and nothing gets clobbered. Hit **Continue writing** and Claude's response streams in token by token — visible to everyone in the room, merging correctly even if someone else is typing at that exact moment.
+Open a room, share the link, and watch someone else's cursor move through the same document as yours. Type at the same time as they do and nothing gets clobbered. Hit **Continue writing** and an LLM completion streams in token by token — visible to everyone in the room, merging correctly even if someone else is typing at that exact moment.
 
 Multiplayer text editing is a genuinely hard concurrency problem, and adding an LLM into the mix that's also mutating shared state in real time makes it harder. Pulse exists to work through that problem properly rather than glue together an off-the-shelf sync library: the CRDT document model is Yjs, but the WebSocket protocol, room/connection lifecycle, and cross-instance fan-out are hand-rolled.
 
@@ -18,7 +19,7 @@ Multiplayer text editing is a genuinely hard concurrency problem, and adding an 
 
 **Conflict-free editing.** Every document is a `Y.Text` CRDT. Clients don't send "replace the whole document" on every keystroke — the editor diffs the old and new value down to a minimal insert/delete, so two people typing in different parts of the same paragraph both land correctly instead of one overwriting the other. [`concurrentEditTest.ts`](packages/backend/scripts/concurrentEditTest.ts) proves this directly: two raw WebSocket clients race to insert distinct strings into the same document, and both converge on an identical, uncorrupted result.
 
-**AI text is just another edit.** When you click *Continue writing*, the server streams a completion from Claude and inserts each token into the document the same way a keystroke would — through the same `Y.Text` operations, broadcast through the same `doc-update` path. There's no separate "AI text" rendering layer on the client. The tricky part is that the insertion point has to survive concurrent edits happening earlier in the document while tokens are still streaming in, so the anchor is a Yjs relative position (`createRelativePositionFromTypeIndex`) rather than a plain numeric offset — it gets re-resolved to a live index before every token is inserted. See [`streamSuggestion.ts`](packages/backend/src/ai/streamSuggestion.ts).
+**AI text is just another edit.** When you click *Continue writing*, the server streams a completion from Groq (Llama 3.3 70B, chosen because it's fast and free to run — swap the model string in `streamSuggestion.ts` for any other streaming chat API) and inserts each token into the document the same way a keystroke would — through the same `Y.Text` operations, broadcast through the same `doc-update` path. There's no separate "AI text" rendering layer on the client. The tricky part is that the insertion point has to survive concurrent edits happening earlier in the document while tokens are still streaming in, so the anchor is a Yjs relative position (`createRelativePositionFromTypeIndex`) rather than a plain numeric offset — it gets re-resolved to a live index before every token is inserted. See [`streamSuggestion.ts`](packages/backend/src/ai/streamSuggestion.ts).
 
 **Scaling past one process.** A single Node process can broadcast to its own connections from memory, no coordination needed. The moment you run a second instance, a client on instance A has no way to hear about an edit made by a client on instance B — so every room update also gets published to a Redis channel (`room:{roomId}:updates`), and every instance subscribed to that room relays it to its own local connections. See [`redisPubSub.ts`](packages/backend/src/redisPubSub.ts).
 
@@ -42,7 +43,7 @@ flowchart LR
     end
 
     Redis[(Redis pub/sub<br/>room:*:updates)]
-    Claude[Claude API<br/>streaming]
+    Groq[Groq API<br/>streaming]
 
     A <--doc-update / cursor--> WS1
     B <--doc-update / cursor--> WS2
@@ -50,8 +51,8 @@ flowchart LR
     WS2 <--> Room2
     Room1 <-- publish / subscribe --> Redis
     Room2 <-- publish / subscribe --> Redis
-    WS1 -. ai-request .-> Claude
-    Claude -. token stream .-> WS1
+    WS1 -. ai-request .-> Groq
+    Groq -. token stream .-> WS1
 ```
 
 ## Try it
@@ -63,7 +64,7 @@ docker run -d -p 6379:6379 redis:7-alpine   # or: brew install redis && brew ser
 # packages/backend/.env
 echo "PORT=3001
 REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=sk-ant-..." > packages/backend/.env
+GROQ_API_KEY=gsk_..." > packages/backend/.env
 
 # packages/frontend/.env
 echo "VITE_WS_URL=ws://localhost:3001" > packages/frontend/.env
@@ -72,7 +73,7 @@ pnpm dev:backend    # terminal 1
 pnpm dev:frontend   # terminal 2
 ```
 
-Open `localhost:5173`, click **New document**, then open the room URL again in a second window (or an incognito one) to see it as two people. `ANTHROPIC_API_KEY` is only needed for the AI suggestion button — everything else works without it.
+Open `localhost:5173`, click **New document**, then open the room URL again in a second window (or an incognito one) to see it as two people. `GROQ_API_KEY` is only needed for the AI suggestion button — everything else works without it, and Groq's free tier is enough to run it (get a key at [console.groq.com](https://console.groq.com/keys)).
 
 ## Testing
 
@@ -92,7 +93,7 @@ packages/
       server.ts          Express + ws bootstrap, message routing
       rooms.ts            in-memory room registry (Y.Doc, connections, presence)
       redisPubSub.ts       cross-instance fan-out
-      ai/streamSuggestion.ts   Claude streaming -> Yjs relative-position inserts
+      ai/streamSuggestion.ts   Groq streaming -> Yjs relative-position inserts
       protocol.ts          WebSocket message types
     scripts/
       concurrentEditTest.ts    the CRDT correctness proof

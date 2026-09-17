@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import * as Y from "yjs";
 import type { Room } from "../rooms.js";
 import type { UpdateOrigin } from "../server.js";
@@ -6,8 +6,10 @@ import type { UpdateOrigin } from "../server.js";
 const SYSTEM_PROMPT =
   "Continue the following text naturally, in the same voice and tense. Output only the continuation, no preamble.";
 
+const MODEL = "llama-3.3-70b-versatile";
+
 export interface StreamSuggestionArgs {
-  anthropic: Anthropic;
+  groq: Groq;
   room: Room;
   requestId: string;
   cursorPosition: number;
@@ -23,7 +25,7 @@ export interface StreamSuggestionArgs {
 // -> Redis-publish pipeline as a human edit (see server.ts). We do not maintain
 // a separate "AI text" rendering path on the client.
 export async function streamSuggestion({
-  anthropic,
+  groq,
   room,
   requestId,
   cursorPosition,
@@ -44,15 +46,20 @@ export async function streamSuggestion({
   const origin: UpdateOrigin = { userId: "ai", excludeConnId: undefined, fromRedis: false };
 
   try {
-    const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-6",
+    const stream = await groq.chat.completions.create({
+      model: MODEL,
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: contextWindow }],
+      stream: true,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: contextWindow },
+      ],
     });
 
-    stream.on("text", (delta: string) => {
-      if (!delta) return;
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (!delta) continue;
+
       const abs = Y.createAbsolutePositionFromRelativePosition(relPos, room.doc);
       const index = abs ? abs.index : room.ytext.length;
 
@@ -62,9 +69,8 @@ export async function streamSuggestion({
 
       relPos = Y.createRelativePositionFromTypeIndex(room.ytext, index + delta.length);
       onToken(delta);
-    });
+    }
 
-    await stream.finalMessage();
     log(`[ai-done] requestId=${requestId} room=${room.roomId}`);
     onDone();
   } catch (err) {

@@ -6,7 +6,7 @@ import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
 import * as Y from "yjs";
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 
 import type { ClientMessage, ServerMessage, PresenceSnapshot } from "./protocol.js";
 import {
@@ -32,13 +32,13 @@ export interface UpdateOrigin {
 
 const PORT = Number(process.env.PORT ?? 3001);
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 function log(msg: string): void {
   console.log(`${new Date().toISOString()} ${msg}`);
 }
 
-const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
+const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 
 const app = express();
 app.use(cors());
@@ -236,12 +236,12 @@ wss.on("connection", (ws: WebSocket) => {
       case "ai-request": {
         const room = getRoom(msg.roomId);
         if (!room) return;
-        if (!anthropic) {
+        if (!groq) {
           const errMsg: ServerMessage = {
             type: "ai-error",
             roomId: msg.roomId,
             requestId: "n/a",
-            message: "ANTHROPIC_API_KEY is not configured on the server",
+            message: "GROQ_API_KEY is not configured on the server",
           };
           ws.send(JSON.stringify(errMsg));
           return;
@@ -251,7 +251,7 @@ wss.on("connection", (ws: WebSocket) => {
         log(`[ai-request] room=${msg.roomId} user=${msg.userId} requestId=${requestId}`);
 
         streamSuggestion({
-          anthropic,
+          groq,
           room,
           requestId,
           cursorPosition: msg.cursorPosition,
@@ -318,5 +318,5 @@ function handleDisconnect(roomId: string, userId: string, connId: string): void 
 }
 
 server.listen(PORT, () => {
-  log(`[listening] port=${PORT} redis=${REDIS_URL} aiEnabled=${Boolean(anthropic)}`);
+  log(`[listening] port=${PORT} redis=${REDIS_URL} aiEnabled=${Boolean(groq)}`);
 });
